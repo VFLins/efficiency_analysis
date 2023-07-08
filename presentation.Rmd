@@ -1,0 +1,164 @@
+---
+title: "Measuring Efficiency on Milk Production Farms on the Cities of the Agreste Region of Pernambuco"
+author: "Vitor Ferreira Lins"
+date: "09 de dezembro de 2021"
+output: 
+   powerpoint_presentation:
+      reference_doc: "style/style.pptx"
+---
+
+```{r setup, include=FALSE}
+# Encoding: UTF-8
+library(tmap)
+library(tidyverse)
+library(Benchmarking)
+library(knitr)
+library(readxl)
+opts_chunk$set(echo = T)
+
+# loading database, models and functions
+load('data/environment.RData')
+# loading personal ggplot2 styles
+source('style/my_ggtheme.R')
+```
+# 1. Introduction
+
+## 1.1. Objective
+
+This study intends to conduct a efficiency analysis on the cow milk production in the cities of the Agreste region of the state of Pernambuco, in Brazil.
+
+- Efficiency frontier
+- Efficiency scores
+- Improvement points
+- Geographical clustering of the industry
+
+# 2. Data
+
+## 2.1. Discriptive statistics
+
+```{r, echo=F}
+var_names <- names(data[, -c(1:4)])
+fqrt <- function(x) { quantile(x, prob =.25) }
+tqrt <- function(x) { quantile(x, prob =.75) }
+temp <- tibble(
+  Variables =var_names,
+  Mean =sapply(data[,var_names], mean),
+  SD =sapply(data[,var_names], sd),
+  `1st Quartile` =sapply(data[,var_names], fqrt),
+  Median =sapply(data[,var_names], median),
+  `3rd Quartile` =sapply(data[,var_names], tqrt)
+)
+kable(temp, digits =2, caption ="Source: IBGE, own elaboration")
+rm(fqrt, tqrt, temp, var_names)
+```
+
+## 2.2. Biggest and smallest producers
+
+:::::::::::::: {.columns}
+::: {.column}
+
+```{r echo=F}
+l_milk_total <- sum(data$l_prod_milk)
+data[order(data$l_prod_milk, decreasing =T), c("city", "l_prod_milk")] %>%
+  mutate(percent ={(.$l_prod_milk/l_milk_total) *100}) %>%
+  mutate(percent =paste0(round(percent,2), "%")) %>%
+  setNames(c("City", "Milk Produced (liters)", "Total milk production")) %>%
+  mutate(`Milk Produced (liters)` =as.character(`Milk Produced (liters)`)) -> temp
+   rbind(
+     temp[1:6,],
+     tibble(
+       City ="...",
+       `Milk Produced (liters)` ="...", 
+       `Total milk production` ="..."
+      ),
+     temp[64:70,]
+    ) %>% kable(caption ="Source: IBGE, own elaboration.")
+   
+rm(l_milk_total, temp)
+
+```
+
+:::
+::: {.column}
+
+```{r echo=F}
+tm_shape(data_wMap) + tm_polygons("l_prod_milk", palette ="Blues") +
+  tm_text('city', remove.overlap =T)
+```
+
+:::
+::::::::::::::
+
+# 3. Model
+
+## 3.1. Estimating possible models
+
+```{r echo=F, fig.width=12}
+plot_models()
+```
+
+## 3.2. Choosing a model
+
+:::::::::::::: {.columns}
+::: {.column}
+### Credits and methodology:
+
+- Before choosing a model, statistical tests performed with Wilson, Paul W. (2008)'s FEAR pakcage developed for R.
+- And models were estimated with Peter Bogetoft and Lars Otto's Benchmarking package developed for R.
+- The possible models contemplated (FDH and VRS) were chosen from the tests obtained for Convexity of the production and return to scale, respectively.
+- The tests rejected both the **Convexity** hypothesis and **Constant Return to Scale**, so the models tested will follow at least one of the opposing assumptions.
+:::
+::: {.column}
+### Models:
+
+1. Free Disposability Hull (FDH) with fixed number of settlements and oriented for input and output;
+2. Same as model 1, but only oriented for input;
+3. Variable Return to Scale (VRS) with fixed number of settlements and oriented for input and output;
+4. Same as model 3, but only oriented for input.
+:::
+::::::::::::::
+
+## 3.3. Efficiency scores
+
+``` {r fig.width=12, echo=F, fig.height =7}
+plot_effs()
+```
+
+# 4. Bootstraping and Separability
+
+## 4.1. Bootstraping results for the biggest and smallest productions
+```{r fig.width=12, echo=F, fig.height =7}
+slc <- order(data$l_prod_milk, decreasing =T)[c(1:6, 65:70)]
+
+tibble(
+  inf =results$bstrap_default$conf.int[,1],
+  sup =results$bstrap_default$conf.int[,2]
+) %>% mutate(
+  dhat =results$bstrap_default$dhat.bc,
+  bmp ={data$l_prod_milk >200},
+  city =data$city
+) -> temp
+
+ggplot(temp[slc,], aes(x =city, color =bmp)) + 
+  geom_point(aes(y ={1/dhat}), size =4) +
+  geom_errorbar(ymin ={1/temp$inf[slc]}, ymax ={1/temp$sup[slc]}, size =1.2) +
+  labs(x ='', y ='Estimated efficiency scores', color = 'Big milk producer') +
+  expand_limits(y =c(0.25,1)) + custom_theme()
+```
+
+## 4.2. Separabily results
+
+:::::::::::::: {.columns}
+::: {.column}
+- The separability tests included geographical placement of the cities, and the results generally reject the hypothesis of **Geogrphic impact** over the efficiency of the cities;
+- The results are shown at the right side:
+:::
+::: {.column}
+1. P-values with Latitude and Longitude:
+**0.252, 0.509**;
+2. P-values with Longitude only:
+**0.029, 0.076**;
+3. P-values with Latitude only:
+**0.139, 0.123**.
+:::
+::::::::::::::

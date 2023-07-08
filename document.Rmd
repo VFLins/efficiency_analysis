@@ -1,0 +1,679 @@
+---
+title: "Measuring Efficiency on Milk Production Farms on the Cities of the Agreste Region of Pernambuco"
+author: "Vitor Ferreira Lins"
+date: "30/09/2021"
+output: 
+  word_document:
+    reference_docx: "style/style.docx"
+---
+
+```{r setup, include=FALSE}
+# Encoding: ISO-8959-1, won't output, but will keep special characters
+library(tmap)
+library(tidyverse)
+library(Benchmarking)
+library(knitr)
+library(readxl)
+opts_chunk$set(echo = T)
+
+# loading database, models and functions
+load('data/environment.RData')
+# loading personal ggplot2 styles
+source('style/my_ggtheme.R')
+```
+
+# Abstract
+
+The present paper intends to conduct an efficiency analysis of cow milk production in the farms of the Agreste region of the Brazilian state of Pernambuco. The efficiency scores are obtained using Data Envelopment Analysis (DEA) methodology, and the size of the produced unit is given by the amount of milk produced. The results obtained show the relationship between size and their efficiency scores.
+
+# 1. Introduction
+
+For the efficiency analysis, it will be used the Variable Return to Scale, proposed by Charnes, Cooper, and Rhodes (1978), measuring efficiency a La Farrell (1957) modeled with the R package "Benchmarking" by Bogetoft and Otto (2011). Some hypothesis tests and Bootstraps were made using the R package "FEAR" by Wilson, Paul W. (2008).
+
+# 2. Literature Review
+
+The modeling chosen relies on the input-output approach, required for the formulation of an efficiency frontier. The following papers have a series of elaborated analyses on which this article will be inspired:
+
+### Table 1: Efficiency modeling on literature
+
+```{r echo=F, paged.print=TRUE}
+temp <- read_xlsx("data/2nd_Assignment_table-short.xlsx")
+kable(temp[,-length(temp)], longtable =T)
+rm(temp)
+```
+
+Some papers to put in evidence here are Souza e Gomes (2020) and Schultea et. al.(2018), which put some intriguing factors in evidence to observe while modeling for efficiency, specifically for milk production.
+
+In summary, both papers approach the efficiency of milk production by the quality of life of the cattle, but in two different ways. The first one goes about the amount and variety of the grass and the area available for pasture, while the second paper mentioned correlates the quality of life with the time spent on grazing, and some other factors, like the quality of the water.
+
+# 3. Data
+
+## 3.1. Descriptive statistics
+
+The data reviewed in this article was collected from the Brazillian Institute of Geography and Statistics (IBGE) and contains data from the Agriculture Census of 2017, the chosen subject was the production of milk for each city in the "agreste" region of the state of Pernambuco.
+
+The data collected contains three missing values, all of which are associated with the city of Sairé, for that reason, this city will be disregarded from every further analysis in this paper. On the table below, are the descriptive data from the chosen dataset:
+
+### Table 2: Discriptive statistics
+
+```{r, echo=F}
+var_names <- names(data[, -c(1:4)])
+fqrt <- function(x) { quantile(x, prob =.25) }
+tqrt <- function(x) { quantile(x, prob =.75) }
+temp <- tibble(
+  Variables =var_names,
+  Mean =sapply(data[,var_names], mean),
+  SD =sapply(data[,var_names], sd),
+  `1st Quartile` =sapply(data[,var_names], fqrt),
+  Median =sapply(data[,var_names], median),
+  `3rd Quartile` =sapply(data[,var_names], tqrt)
+)
+kable(temp, digits =2, caption ="Source: IBGE, own elaboration")
+rm(fqrt, tqrt, temp, var_names)
+```
+
+The variable "city" indexes the data for each following variable,  "l_prod_milk" shows the production of milk in the city in liters, "n_settlements" is for the number of settlements that part or all production is destined for milk production, "a_pasture" is for the number of the total area destined for pasture in the cities (hectare), "n_milk_cow_percent" shows the percentage of the number of milk cows to the total cattle population of the city.
+
+One peculiarity of this data set is on the distribution of all variables being very similar, with clustering of small values and less than 20 observations with high values, as outliers.
+
+### Figure 1: Boxplot of the data
+
+```{r fig.width=7, fig.height=3, echo=F}
+var_names <- c( "city", names(data[, -c(1:4)]) )
+temp <- data[ , var_names] %>%
+  mutate(
+    a_pasture =a_pasture/100,
+    l_prod_milk =l_prod_milk/100,
+    n_settlements =n_settlements/10
+  )
+
+pivot_longer(temp, cols =-city) %>% 
+ggplot(., aes(y =value, x =name, fill =name)) + geom_boxplot() +
+  custom_theme() +   scale_fill_brewer(palette ="Blues") +
+  theme(legend.position ="none") + coord_flip() +
+  labs(x ="", y ="", fill ="Variable", caption =
+'* "a_pasture", "l_prod_milk" and "n_settlements" in 100 \n Source: IBGE, own elaboration') +
+
+rm(var_names)
+```
+
+These outliers are also geographically clustered, it might have some connection with their geographic clustering, as can be observed in the map below:
+
+### Figure 2: Geographic allocation of milk production
+
+```{r fig.width=7, echo=F}
+tm_shape(data_wMap) +
+  tm_polygons("l_prod_milk", palette ="Blues", style = "log10_pretty") +
+  tm_text('city', remove.overlap =T, size =.83, col ="black")
+```
+
+From the distribution of liters of milk produced ("l_prod_milk"), it's possible to distinguish a few outliers, that represent the cities where most of the milk is produced for this region, these cities will be considered major producers and, for this article, their efficiency benchmark will have higher importance.
+
+### Table 3: Biggest and smallest milk producing units
+
+```{r echo=F}
+l_milk_total <- sum(data$l_prod_milk)
+data[order(data$l_prod_milk, decreasing =T), c("city", "l_prod_milk")] %>%
+  mutate(percent ={(.$l_prod_milk/l_milk_total) *100}) %>%
+  mutate(percent =paste0(round(percent,2), "%")) %>%
+  setNames(c("City", "Milk Produced (liters)", "Total milk production")) %>%
+  mutate(`Milk Produced (liters)` =as.character(`Milk Produced (liters)`)) -> temp
+   rbind(
+     temp[1:6,],
+     tibble(
+       City ="...",
+       `Milk Produced (liters)` ="...", 
+       `Total milk production` ="..."
+      ),
+     temp[64:70,]
+    ) %>% kable()
+   
+rm(l_milk_total, temp)
+```
+
+The cities of Itaíba, Pedra, São Bento do Una, Buíque and Venturosa are the main milk producers in Pernambuco, with historical tradition of cattle raising in the region. Together, they produce 44,1% of all the cow milk. While amongst the cities that produces less milk are Cupira and Toritama, this can be explained by their production systems being focused in clothes and fabric.
+
+### Table 4: Correlation Matrix
+
+```{r echo=F}
+var_names <- names(data[, -c(1:4)])
+cor(data[,var_names]) %>% kable()
+rm(var_names)
+``` 
+
+Another interesting thing to notice is the correlation between the area for grazing and the amount of milk produced (0.73), but between the inputs, even though it was taken care that the correlation wasn't too high, there where found a relatively strong correlation between most of the inputs. This condition might make it difficult to indicate the variable that should change to increase efficiency.
+
+# 4. Methodology
+
+## 4.1. Choosing the Efficiency Model
+
+Before choosing a model, it was necessary to evaluate the assumptions with R's FEAR package by Wilson, Paul W. (2008). The two tests, developed by Kneip et al. (2016) and Simar and Wilson (2020), approach the hypothesis of constant return to scale and convexity of the production, respectively, in which both were rejected.
+
+Based on the given results, the first model selected was Free Disposability Hull (FDH), which, according to Lawrence et. al (2017), is more robust to less substitutable inputs and creates a frontier based only on actual observations, instead of weighted averages.
+
+Given the hypothesis of constant return to scale being rejected, as a second option, the Variable Return to Scale (VRS) model will be tested too, yet this is one of the most common, given that neoclassic economics defaults to the assumption of convexity of input requirement and output possibilities (LAWRENCE et. al, 2017), which was rejected by the previous statistical tests.
+
+## 4.2. Directional Model Hypothesis
+
+According with Lawrence et. al. (2017), the directional parameters are usually defined by specialists, because they may be able to tell which values should be assigned, given the disposal of inputs and outputs, and their theoretical relationship.
+
+However, it is possible for a non-specialist on the field to assign non-discretionary variables to the data envelopment model, for the efficiency scores to be compatible with the assumption that, whether the input can be reallocated to increase efficiency or not.
+
+For this study, the impossibility of reallocating the number of settlements will be taken into consideration. This means that the city governments cannot increase or decrease the number of milk farms in their territory to increase efficiency, but the other variables, which are controlled by the farmers, can all be reallocated, including the area available for grazing.
+
+On the other hand, it will be tested for output to be discretionary, for whether it's best to leave the amount of milk collected to be decided by the inputs, or if the farmers should decide the amount of milk collected as a proxy for the number of milkings made.
+
+Figure 2 shows the efficiency scores for each model, where "Model 1" and "Model 2" are set up as FDH, but the first leaves the output as discretionary, as the opposite of the latter, the same goes for "Model 3" and "Model 4", but considering the variable return to scale assumption (VRS model), the observations are ordered by the amount of milk produced by the unit (decreasing).
+
+### Figure 3: Efficiency Scores
+
+``` {r fig.width=7, fig.height=4, echo=F}
+plot_effs()
+```
+
+The FDH models oddly leave high-efficiency scores for most of the observations, so it doesn't seem to be a good choice for evaluating efficiencies, the model kept for every further analysis will be the "Model 4", using Variable Return to Scale (VRS) and keeping output as not discretionary.
+
+## 4.3. Bootstrapping and Separability
+
+Bootstrapping can be very useful for estimating the statistical significance of the estimated efficiencies as well as for obtaining unbiased efficiency scores:
+
+### Figure 4: Estimated efficiency scores for the most important DMUs
+
+```{r fig.width=7, fig.height=3, echo=F}
+slc <- order(data$l_prod_milk, decreasing =T)[c(1:6, 65:70)]
+
+tibble(
+  inf =results$bstrap_default$conf.int[,1],
+  sup =results$bstrap_default$conf.int[,2]
+) %>% mutate(
+  dhat =results$bstrap_default$dhat.bc,
+  bmp ={data$l_prod_milk >200},
+  city =data$city
+) -> temp
+
+ggplot(temp[slc,], aes(x =city, color =bmp)) + 
+  geom_point(aes(y ={1/dhat}), size =4) +
+  geom_errorbar(ymin ={1/temp$inf[slc]}, ymax ={1/temp$sup[slc]}, size =1.2) +
+  labs(x ='', y ='Estimated efficiency scores', color = 'Big milk producer') +
+  expand_limits(y =c(0.25,1)) + custom_theme() + coord_flip()
+rm(slc)
+```
+
+In Figure 3, the DMUs with the highest efficiency scores were the same highlighted in Figure 4. Most of them have displayed efficiency score values equal to or next to one, but the bootstrapped results showed values next to 0.7 with confidence intervals that do not reach 1, this indicates the presence of bias and possible omitted variables.  
+
+# 5. Assessment and Discussion
+
+Only a few of the studied cities produced high-efficiency scores, and these units were significantly divided between the largest producers and the smallest ones. Figure 3 and Table 5 endorse this statement, the latter one displays the number of units peered by each performance reference unit. The results obtained in Figure 3 raise a question about how statistically significant are the difference of the actual (bootstrapped) efficiency scores of the major and lesser milk producers.
+
+### Table 5: Most efficient cities and their peering benchmark
+
+```{r echo=F}
+temp <- peers(model$vrs4) %>% as.vector() %>% na.omit()
+
+tibble(
+  City =data$city[unique(temp)],
+  Peered =summary(as.factor(temp)),
+  `Milk Produced (liters)` =data$l_prod_milk[unique(temp)]
+) %>% .[order(.$Peered, decreasing =T), ] %>% kable()
+rm(temp)
+```
+
+The acceptability of a set of tests depends on the distribution shape of the data, the central limit theorem could not be applied trivially because the data does not come from a population sample but a set of estimated statistics. Before proceeding with any tests, the dataset was to be evaluated for its distribution's shape in this case, so the bootstrapped efficiency scores were tested for normality with the Shapiro-Wilk test, in which the null hypothesis was rejected.
+
+Since the normality hypothesis was rejected and the central limit theorem would not be applied, the differences tested in the data must be non-parametric in this case, the chosen test was Mann-Whitney for true location shift hypothesis, which uses Wilcoxon's statistic, but modified to involve two samples. The samples' were chosen by size, based on their available number of observations, their size between tests would differ by at least ten observations, and this number would also be the minimum amount for each sample.
+
+### Table 6: Statistical tests for bootstrap results
+
+```{r echo=F}
+dhat <- 1/results$bstrap_default$dhat.bc
+slc <- order(data$l_prod_milk, decreasing =T)
+
+tibble(
+  Test =c(
+    "Shapiro-Wilk",
+    "Mann-Whitney (Major and Smallest 50%)",
+    "Mann-Whitney (Major and Smallest 20%)"
+  ),
+  `P-Value` = c(
+    shapiro.test(dhat)$p.value,
+    wilcox.test(dhat[slc[1:35]], dhat[slc[36:70]], exact =F)$p.value,
+    wilcox.test(dhat[slc[1:14]], dhat[slc[57:70]], exact =F)$p.value
+  ),
+  `Null hypothesis` =c(
+    "Normality", "True location shift is not zero",
+    "True location shift is not zero"
+  )
+) %>% kable()
+
+rm(dhat, slc)
+```
+
+### Figure 5: Density plots for tested bootsrap results
+
+```{r echo=F, fig.width=3, fig.height=3}
+dhat <- results$bstrap_default$dhat.bc
+slc <- order(data$l_prod_milk, decreasing =T)
+temp <- tibble(dhat =1/dhat[slc],bprd ={data$l_prod_milk[slc] > 1406})
+
+ggplot(temp, aes(x =dhat, fill =bprd)) + custom_theme() +
+  geom_density(alpha =0.3) +
+  geom_vline(
+    xintercept =c(mean(temp$dhat[1:35]), mean(temp$dhat[36:70])),
+    color =c("royalblue", "orchid"), size =.8, alpha =.75) +
+  labs(x ="", y ="", fill ="")+
+  scale_fill_manual(
+    values =c("royalblue", "orchid"),
+    labels =c("Smallest 50%", "Major 50%"))
+
+ggplot(temp[c(1:14, 57:70), ], aes(x =dhat, fill =bprd)) + custom_theme() +
+  geom_density(alpha =0.3) +
+  geom_vline(
+    xintercept =c(mean(temp$dhat[1:14]), mean(temp$dhat[57:70])),
+    color =c("royalblue", "orchid"), size =.8, alpha =.75) +
+  labs(x ="", y ="", fill ="", caption ="*Vertical lines mark the mean")+
+  scale_fill_manual(
+    values =c("royalblue", "orchid"),
+    labels =c("Smallest 20%", "Major 20%"))
+
+rm(dhat, slc, temp)
+```
+
+The p-values displayed in Table 6 tell that the hypothesis of true location shift is equal to zero could not be rejected, which means that there were significant differences between the samples selected. Figure 5 shows their distributions for checking over, it is possible to notice that the mean bootstrapped estimates of the smallest producers (vertical orchid lines) are placed to the right in comparison to the mean bootstrapped estimates of the major producers (vertical blue lines) in both cases, which means that the smallest producers have, in general, higher efficiency scores.
+
+Classical reference in the academy such as Gooding et. al (1985) suggests a non-significant or negative relationship between the size of the organization and its efficiency. However, most recent studies have somewhat different conclusions, like a non-linear relationship (HELFAND; LEVINE, 2004), or no clear relationship (ARAGON; RESTUCCIA, 2021).
+
+According to Helfand and Levine (2004), the non-linear correlation between efficiency and farm size is negative along with the small and average-sized units, but positive between the average and big sized ones, although this conclusion comes very close to what is observed in Figure 3, this affirmation cannot be perfectly related to the data of the present study, since the DMUs used are cities, instead of milk production households.
+
+But some resemblance is to be kept since the cities that produce more milk in this dataset have more traditional cattle raising farms, as this production sector plays a big role in those cities' economy, meanwhile, cities that show the least milk production have other preponderant production sectors, as already mentioned before. So it's expected that the cities that produce more milk will have, on average, larger livestock farms.
+
+# 6. Conclusions
+
+In this study, the efficiency models showed high-efficiency scores and a high amount of peered units concentrated among the major and the lesser milk production units considered. These results were confirmed after the bootstrap, even though every efficiency score was reduced, with the mean of the scores going from 0.5255  to 0.4157 after the bootstrap.
+
+The relationship between efficiency and size found here corroborates the findings of Helfand and Levine (2004), but with a slight addition, that the smallest units tend to show higher efficiency scores. There are still limitations to this conclusion, since the study was performed with a single region of one state, so to elaborate a definitive conclusion, more regions should be observed.
+
+With that said, it is also possible that the higher efficiency scores for smaller units can be related to the increasing complexity of the production system, which makes it difficult to make tight adjustments to the production process. But this hypothesis cannot be tested with the present data and will remain as a suggestion to future studies.
+
+\newpage
+
+# References
+
+CHARNES, Abraham; COOPER, William W.; RHODES, Edwardo. Measuring the efficiency of decision making units. **European journal of operational research**, v. 2, n. 6, p. 429-444, 1978.
+
+BEHR, Andreas. Production and efficiency analysis with R. Berlin: Springer, 2015.
+
+SIMAR, Léopold; WILSON, Paul W. Statistical inference in nonparametric frontier models: recent developments and perspectives. 2007.
+
+KNEIP, Alois; SIMAR, Léopold; WILSON, Paul W. Testing hypotheses in nonparametric models of production. **Journal of Business & Economic Statistics**, v. 34, n. 3, p. 435-456, 2016.
+
+SIMAR, Léopold; WILSON, Paul W. Hypothesis testing in nonparametric models of production using multiple sample splits. **Journal of Productivity Analysis**, v. 53, n. 3, p. 287-303, 2020.
+
+LAWRENCE, Denis et al. Topics in efficiency benchmarking of energy networks: Choosing the model and explaining the results. 2017.
+
+GOODING, Richard Z.; WAGNER III, John A. A meta-analytic review of the relationship between size and performance: The productivity and efficiency of organizations and their subunits. **Administrative science quarterly**, p. 462-481, 1985.
+
+ARAGON, Fernando M.; RESTUCCIA, Diego; RUD, Juan Pablo. Are small farms really more productive than large farms?. **Food Policy**, p. 102168, 2021.
+
+KHATAZA, Robertson RB et al. Examining the relationship between farm size and productive efficiency: a Bayesian directional distance function approach. **Agricultural Economics**, v. 50, n. 2, p. 237-246, 2019.
+
+HELFAND, Steven M.; LEVINE, Edward S. Farm size and the determinants of productive efficiency in the Brazilian Center-West. **Agricultural economics**, v. 31, n. 2-3, p. 241-249, 2004.
+
+\newpage
+
+## Appendix A: Commented Routines used in R for data analysis.
+
+```{r Appen_A, echo=T, eval=F, include=F}
+######################################################
+# Dataset treatment, modelling, tests, and bootstrap
+# NOT recommended to run, might take several minutes
+######################################################
+
+library(tidyverse)
+library(Benchmarking)
+library(geobr)
+
+# function to add spacial variables to the data later
+geomcoord <- function(x, gc =1) {
+   output <- c()
+   for (indx in 1:length( x[["geom"]] )) {
+      output[indx] <- mean({
+         x[["geom"]][[indx]][[1]][[1]] %>%
+            as.data.frame() %>%
+            .[,gc]
+      })
+   }
+   output
+}
+
+# dataset
+var_names <- c(
+   "l_prod_milk", "n_settlements", "a_pasture", "n_milk_cows_percent")
+data <- readRDS("data/dataset.rds") %>% .[.$city!="Sairé", ] %>%
+   mutate(n_milk_cows_percent ={(.$n_milk_cows / .$n_heads)*100}) %>%
+   select(-c(
+      "n_milk_cows", "n_rep_heads", "n_heads", "l_prod_milk/cow", "n_heads/a"
+   ))
+
+# matrices for modelling, input and output
+mtx_X <- as.matrix(data[, var_names[-1] ])
+rownames(mtx_X) <- data$city
+mtx_Y <- as.matrix(data[, var_names[1] ])
+rownames(mtx_Y) <- data$city
+
+# adding spacial data to the dataset
+data_wMap <- read_municipality(code_muni ="PE", year =2017) %>% 
+   set_names(c("city_cod", "city", "state_cod", "abbrev_state", "geom")) %>%
+   inner_join(., data, by ="city_cod") %>% mutate(city =city.y) %>%
+   select(-c(city.y, city.x))
+
+data <- cbind(
+   longi =geomcoord(data_wMap),
+   latit =geomcoord(data_wMap, gc =2),
+   data
+)
+
+# matrix for modelling, spacial data
+mtx_Z <- data$longi %>% cbind(longi =., latit =data$latit) %>%
+   as.matrix()
+rownames(mtx_Z) <- data$city
+
+rm(geomcoord, var_names)
+
+### Triyng possibilities to fit best the model
+# 1. cleaning dataset
+# 1.1. removing correlated variables
+
+### TESTING HYPOTESES
+results <- list()
+
+results$conv_in <- FEAR::test.convexity(t(mtx_X), t(mtx_Y), 1)
+results$conv_out <- FEAR::test.convexity(t(mtx_X), t(mtx_Y), 2)
+results$conv_hyp <- FEAR::test.convexity(t(mtx_X), t(mtx_Y), 3)
+
+results$rts_in <- FEAR::test.rts(t(mtx_X), t(mtx_Y), 1)
+results$rts_out <- FEAR::test.rts(t(mtx_X), t(mtx_Y), 2)
+results$rts_hyp <- FEAR::test.rts(t(mtx_X), t(mtx_Y), 3)
+
+### ESTIMATING POSSIBLE MODELS
+#detach("package:FEAR", unload =T)
+library(Benchmarking)
+
+# MODEL 1: only the number of settlements is non dicretionary
+model <- list()
+direc <- c(0, 1, 1)
+model$fdh1 <- dea.direct(
+   mtx_X, mtx_Y, c(direc,1), ORIENTATION ="in-out", RTS ="fdh")
+# MODEL 2: same as MODEL 1 but, output is also non discretionary
+model$fdh2 <- dea.direct(
+   mtx_X, mtx_Y, c(direc,0), ORIENTATION ="in-out", RTS ="fdh")
+# MODEL 3: Same as Model 1, but assuming convexity and variable returns to scale
+model$vrs3 <- dea.direct(
+   mtx_X, mtx_Y, c(direc,1), ORIENTATION ="in-out", RTS ="vrs", SLACK =T)
+# MODEL 4: Same as Model 2, but assuming convexity and variable returns to scale
+model$vrs4 <- dea.direct(
+   mtx_X, mtx_Y, c(direc,0), ORIENTATION ="in-out", RTS ="vrs", SLACK =T)
+# MODEL 4 WAS SELECTED
+rm(direc)
+
+### Mean efficiencies for inputs, model-wise:
+#ordered by biggest milk producers
+model$effs <- data.frame(
+   fdh1 ={eff(model$fdh1) %>% rowMeans()},
+   fdh2 ={eff(model$fdh2) %>% rowMeans()},
+   vrs3 ={eff(model$vrs3) %>% rowMeans()},
+   vrs4 ={eff(model$vrs4) %>% rowMeans()}
+) %>% .[match(data$city[order(data$l_prod_milk, decreasing =T)], rownames(.)), ]
+
+### Plots to be used later
+# isoquants
+plot_isoqaunts <- function(){
+   par(mfrow =c(1,2))
+   dea.plot.isoquant(
+      x2 =mtx_X[,1], x1 =mtx_X[,2], RTS ="fdh",
+      ylab ="n_settlements", xlab ="a_pasture"
+   )
+   dea.plot.isoquant(
+      x2 =mtx_X[,1], x1 =mtx_X[,3], RTS ="fdh", 
+      ylab ="", xlab ="n_milk_cows_percent")
+}
+# models
+plot_models <- function(){
+   par(mfrow =c(1,3))
+   dea.plot(mtx_X, mtx_Y, ORIENTATION ="in-out", RTS ="fdh", main ="FDH Models")
+   dea.plot(mtx_X, mtx_Y, ORIENTATION ="in-out", RTS ="vrs", main ="VRS Models")
+   dea.plot(mtx_X, mtx_Y, ORIENTATION ="in-out", RTS ="irs", main ="IRS Models")
+}
+
+# efficiency (ordered by amount of milk produced)
+plot_effs <- function() {
+   par(mfrow =c(2,2))
+   plot(
+      1:70, model$effs$fdh1, type ="h",
+      main ="Model 1", xlab ="", ylab ="Eff. score"
+   )
+   plot(
+      1:70, model$effs$fdh2, type ="h",
+      main ="Model 2", xlab ="", ylab =""
+   )
+   plot(
+      1:70, model$effs$vrs3, type ="h",
+      main ="Model 3", xlab ="Milk producer (decreasing)", ylab ="Eff. score"
+   )
+   plot(
+      1:70, model$effs$vrs4, type ="h",
+      main ="Model 4", xlab ="Milk producer (decreasing)", ylab =""
+   )
+}
+
+# Bootstrap results
+results$bstrap_default <- FEAR::boot.sw98(t(mtx_X), t(mtx_Y))
+
+### Separability test
+results$sep_dual <- FEAR::test.sep.cont(t(mtx_X), t(mtx_Y), t(mtx_Z))
+results$sep_lon <- FEAR::test.sep.cont(t(mtx_X), t(mtx_Y), t( as.matrix(mtx_Z[,1]) ))
+results$sep_lat <- FEAR::test.sep.cont(t(mtx_X), t(mtx_Y), t( as.matrix(mtx_Z[,2]) ))
+
+### SAVING DATA
+save.image("data/environment.RData")
+
+######################################################
+# Tables and Visualisations used in the article
+# Will produce several outputs
+######################################################
+
+library(tmap)
+library(tidyverse)
+library(Benchmarking)
+library(knitr)
+library(readxl)
+opts_chunk$set(echo = T)
+
+# loading database, models and functions
+load('data/environment.RData')
+# loading personal ggplot2 styles
+source('style/my_ggtheme.R')
+
+# Table 1
+temp <- read_xlsx("data/2nd_Assignment_table-short.xlsx")
+kable(temp[,-length(temp)], longtable =T)
+rm(temp)
+
+# Table 2
+var_names <- names(data[, -c(1:4)])
+fqrt <- function(x) { quantile(x, prob =.25) }
+tqrt <- function(x) { quantile(x, prob =.75) }
+temp <- tibble(
+  Variables =var_names,
+  Mean =sapply(data[,var_names], mean),
+  SD =sapply(data[,var_names], sd),
+  `1st Quartile` =sapply(data[,var_names], fqrt),
+  Median =sapply(data[,var_names], median),
+  `3rd Quartile` =sapply(data[,var_names], tqrt)
+)
+kable(temp, digits =2, caption ="Source: IBGE, own elaboration")
+rm(fqrt, tqrt, temp, var_names)
+
+# Table 3
+l_milk_total <- sum(data$l_prod_milk)
+temp <- data[
+  order(data$l_prod_milk, decreasing =T), c("city", "l_prod_milk")
+  ] %>%
+  mutate(percent ={(.$l_prod_milk/l_milk_total) *100}) %>%
+  mutate(percent =paste0(round(percent,2), "%")) %>%
+  setNames(c("City", "Milk Produced (liters)", "Total milk production")) %>%
+  mutate(`Milk Produced (liters)` =as.character(`Milk Produced (liters)`))
+
+rbind(
+  temp[1:6,],
+  tibble(
+    City ="...", `Milk Produced (liters)` ="...", 
+    `Total milk production` ="..."
+  ), 
+  temp[64:70,]
+) %>% kable()
+   
+rm(l_milk_total, temp)
+
+# Table 4
+var_names <- names(data[, -c(1:4)])
+cor(data[,var_names]) %>% kable()
+rm(var_names)
+
+# Table 5
+temp <- peers(model$vrs4) %>% as.vector() %>% na.omit()
+
+tibble(
+  City =data$city[unique(temp)],
+  Peered =summary(as.factor(temp)),
+  `Milk Produced (liters)` =data$l_prod_milk[unique(temp)]
+) %>% .[order(.$Peered, decreasing =T), ] %>% kable()
+rm(temp)
+
+# Table 6
+dhat <- 1/results$bstrap_default$dhat.bc
+slc <- order(data$l_prod_milk, decreasing =T)
+
+tibble(
+  Test =c(
+    "Shapiro-Wilk",
+    "Mann-Whitney (Major and Lesser 50%)",
+    "Mann-Whitney (Major and Lesser 20%)"
+  ),
+  `P-Value` = c(
+    shapiro.test(dhat)$p.value,
+    wilcox.test(dhat[slc[1:35]], dhat[slc[36:70]], exact =F)$p.value,
+    wilcox.test(dhat[slc[1:14]], dhat[slc[57:70]], exact =F)$p.value
+  ),
+  `Null hypothesis` =c(
+    "Normality", "True location shift is not zero",
+    "True location shift is not zero"
+  )
+) %>% kable()
+
+rm(dhat, slc)
+
+# Custom ggplot theme
+custom_theme <- function() {
+  theme_bw() +
+  theme(
+    text =element_text(size =14, family ="serif"),
+    legend.position ="bottom",
+    axis.text.x = element_text(angle = 45, vjust =1, hjust =1))
+}
+
+# Figure 1
+var_names <- c( "city", names(data[, -c(1:4)]) )
+temp <- data[ , var_names] %>%
+  mutate(
+    a_pasture =a_pasture/100,
+    l_prod_milk =l_prod_milk/100,
+    n_settlements =n_settlements/10
+  )
+
+pivot_longer(temp, cols =-city) %>% 
+ggplot(., aes(y =value, x =name, fill =name)) + geom_boxplot() +
+  custom_theme() + scale_fill_brewer(palette ="Blues") +
+  theme(legend.position ="none") + coord_flip() +
+  labs(x ="", y ="", fill ="Variable", caption =
+'* "a_pasture", "l_prod_milk" and "n_settlements" in 100 \n Source: IBGE, own elaboration') +
+
+rm(var_names)
+
+# Figure 2
+tm_shape(data_wMap) +
+  tm_polygons("l_prod_milk", palette ="Blues", style = "log10_pretty") +
+  tm_text('city', remove.overlap =T, size =.83, col ="black")
+
+# Figure 3
+plot_effs()
+
+# Figure 4
+slc <- order(data$l_prod_milk, decreasing =T)[c(1:6, 65:70)]
+
+tibble(
+  inf =results$bstrap_default$conf.int[,1],
+  sup =results$bstrap_default$conf.int[,2]
+) %>% mutate(
+  dhat =results$bstrap_default$dhat.bc,
+  bmp ={data$l_prod_milk >200},
+  city =data$city
+) -> temp
+
+ggplot(temp[slc,], aes(x =city, color =bmp)) + 
+  geom_point(aes(y ={1/dhat}), size =4) +
+  geom_errorbar(ymin ={1/temp$inf[slc]}, ymax ={1/temp$sup[slc]}, size =1.2) +
+  labs(x ='', y ='Estimated efficiency scores', color = 'Big milk producer') +
+  expand_limits(y =c(0.25,1)) + custom_theme() + coord_flip()
+rm(slc)
+
+# Figure 5
+dhat <- results$bstrap_default$dhat.bc
+slc <- order(data$l_prod_milk, decreasing =T)
+temp <- tibble(dhat =1/dhat[slc],bprd ={data$l_prod_milk[slc] > 1406})
+
+ggplot(temp, aes(x =dhat, fill =bprd)) + custom_theme() +
+  geom_density(alpha =0.3) +
+  geom_vline(
+    xintercept =c(mean(temp$dhat[1:35]), mean(temp$dhat[36:70])),
+    color =c("royalblue", "orchid"), size =.8, alpha =.75) +
+  labs(x ="", y ="", fill ="")+
+  scale_fill_manual(
+    values =c("royalblue", "orchid"),
+    labels =c("Lesser 50%", "Major 50%"))
+
+ggplot(temp[c(1:14, 57:70), ], aes(x =dhat, fill =bprd)) + custom_theme() +
+  geom_density(alpha =0.3) +
+  geom_vline(
+    xintercept =c(mean(temp$dhat[1:14]), mean(temp$dhat[57:70])),
+    color =c("royalblue", "orchid"), size =.8, alpha =.75) +
+  labs(x ="", y ="", fill ="")+
+  scale_fill_manual(
+    values =c("royalblue", "orchid"),
+    labels =c("Lesser 20%", "Major 20%"))
+
+rm(dhat, slc, temp)
+```
+
+\newpage
+
+## Appendix B: Complete dataset
+
+### Main variables
+
+```{r Appen_B1, echo=F, paged.print=T}
+data[,-c(1,2,4)] %>% kable()
+```
+
+### Ommited or transformed variables
+
+```{r Appen_B2, echo=F, paged.print=T}
+readRDS('data/dataset.rds') %>% .[.$city != 'Sairé', c(1,4,5,7,9,10)] %>%
+  kable()
+```
+
+### Other variables, used for separabilty test
+
+```{r Appen_B3, echo=F, paged.print=T}
+data[,c(3,4,1,2)] %>% kable()
+```
+
